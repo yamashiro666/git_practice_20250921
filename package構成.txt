@@ -1,0 +1,19 @@
+com.practice.client.tracking
+├─ bootstrap/                     … 起動・ワイヤリング
+│   └─ App.java
+├─ config/                        … 設定（properties読み込み等）
+│   └─ AppConfig.java
+├─ domain/dto/                    … DTO（純粋なデータ構造）
+│   ├─ RecvInputDTO.java
+│   └─ RecvOutputDTO.java
+├─ application/worker/            … アプリロジック（スレッド/間引き/スケジューラ）
+│   ├─ ReceiverWorker.java
+│   └─ IntervalSampler.java
+├─ infrastructure/http/           … HTTPクライアント等の外部I/O
+│   └─ TrackingStreamClient.java
+├─ infrastructure/persistence/token/   … 再開トークンの保存先
+│   ├─ TokenStore.java
+│   └─ FileTokenStore.java
+└─ infrastructure/db/             … DB書き込みのポート/実装
+    ├─ DatabaseWriter.java        （ポート/インターフェース）
+    └─ StdoutWriter.java          （仮実装：標準出力）
