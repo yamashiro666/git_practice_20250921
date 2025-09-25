@@ -1,11 +1,15 @@
 package test;
 
 import java.io.BufferedReader;
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.InterruptedIOException;
+import java.io.Reader;
 import java.net.URI;
+import java.net.URISyntaxException;
+import java.net.URL;
 import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -17,9 +21,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
-import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -36,38 +38,59 @@ public class StreamWithRetry {
 	/** 最大接続回数 */
 	private int maxRetries;
 	/** 接続回数 */
-	private int attempt;
+	private int attempt = 0;
+	/** 接続時間 */
 	private long timeOut;
+	/** position_token保存ファイル */
 	private String positionTokenFilePath;
+	/** position_token */
 	private volatile String positionToken;
+	/** データ受信ストリーム処理停止フラグ */
 	private volatile boolean streamStop = false;
-	private final ScheduledExecutorService watchdog = Executors.newSingleThreadScheduledExecutor();
 
 	public StreamWithRetry() throws IOException {
+        final String propsName = "stream.properties"; // src/main/resources 配下
 
-		Properties p = new Properties();
-		InputStream in = Files.newInputStream(Path.of(null));
-		p.load(in);
+        // プロパティをクラスパスから取得
+        Properties p = new Properties();
+        InputStream raw = Thread.currentThread()
+                .getContextClassLoader()
+                .getResourceAsStream(propsName);
+        if (raw == null) {
+            throw new FileNotFoundException(
+                "クラスパス上に " + propsName + " が見つかりません。src/main/resources に配置してください。");
+        }
+        try (Reader r = new InputStreamReader(raw, StandardCharsets.UTF_8)) {
+            p.load(r); // key=value 形式を読み込み（UTF-8）
+        }
 
-		baseUrl = p.getProperty("stream.baseUrl");
-		authToken = p.getProperty("stream.authToken");
-		maxRetries = Integer.parseInt(p.getProperty("stream.retry.max-retries"));
-		timeOut = Long.parseLong(p.getProperty("stream.timeout"));
-		positionTokenFilePath = p.getProperty("stream.positionTokenFile");
-		
-		// クライアント作成
-		client = HttpClient.newBuilder()
-				.connectTimeout(Duration.ofMillis(timeOut))
-				.build();
+        // 必須プロパティの取り出し
+        baseUrl              = require(p, "stream.baseUrl");
+        authToken            = require(p, "stream.authToken");
+        maxRetries           = Integer.parseInt(require(p, "stream.retry.max-retries").trim());
+        timeOut              = Long.parseLong(require(p, "stream.timeout").trim()); // ミリ秒
+        positionTokenFilePath= require(p, "stream.positionTokenFile");
 
-	}
+        // クライアント作成
+        client = HttpClient.newBuilder()
+                .connectTimeout(Duration.ofMillis(timeOut))
+                .build();
+    }
+
+    private static String require(Properties p, String key) {
+        String v = p.getProperty(key);
+        if (v == null || v.isBlank()) {
+            throw new IllegalArgumentException("必須プロパティが未設定: " + key);
+        }
+        return v;
+    }
 
 	public OutputDto receive() throws InterruptedException {
 		return que.poll();
 	}
 
 	/** 受信ループ：例外時に catch の中で N 回まで再接続 */
-	public void runStream(InputDto dto) throws InterruptedException {
+	public void runStream(InputDto dto) throws IOException, URISyntaxException, InterruptedException {
 		String positionToken = null; // サーバが返すトークンで継続（任意）
 		
 		Pattern p = Pattern.compile("\"(position_token)\"\\s*:\\s*\"([^\"]+)\"");
@@ -95,8 +118,14 @@ public class StreamWithRetry {
 
 		while (!streamStop) {
 
-			// 指示: URIの末尾にはqueryStrをつけてください。
-			String uri = (positionToken == null) ? baseUrl : baseUrl + "&position_token=" + URLEncoder.encode(positionToken, StandardCharsets.UTF_8);
+			// URL組み立て
+			String baseWithQuery = (queryStr == null || queryStr.isEmpty())
+					? baseUrl
+					: (baseUrl.contains("?") ? baseUrl + "&" + queryStr : baseUrl + "?" + queryStr);
+			String uri = (positionToken == null)
+					? baseWithQuery
+					: baseWithQuery + "&position_token=" + URLEncoder.encode(positionToken, StandardCharsets.UTF_8);
+			
 			HttpRequest req = HttpRequest.newBuilder(URI.create(uri))
 					.header("Authorization", "Bearer " + authToken)
 					.GET()
@@ -164,23 +193,21 @@ public class StreamWithRetry {
 	}
 
 	/** 実際の「catchの中で再接続」パターン（IOException 用） */
-	private void retryLoop() throws InterruptedException {
-		// リトライ処理
-		attempt = 0;
+	private void retryLoop() throws IOException, URISyntaxException, InterruptedException {
+		// リトライ回数判定
 		if (attempt < maxRetries) {
 			attempt++;
 		} else {
 			streamStop = true;
 		}
 		
-		// 指示: this.positionTokenを、this.positionTokenFilePathに書き込みます。
-		// 書き込みの際は、上書きで書き込んでください。
 		try {
+			URL u = StreamWithRetry.class.getResource(positionTokenFilePath);
 			String toWrite = (this.positionToken == null) ? "" : this.positionToken;
-			Files.writeString(Path.of(this.positionTokenFilePath), toWrite, StandardCharsets.UTF_8);
-		} catch (IOException e) {
-			// ログのみ（再スローしない）：書き込み失敗してもストリーム再接続自体は継続したい
+			Files.writeString(Path.of(u.toURI()), toWrite, StandardCharsets.UTF_8);
+		} catch (IOException | URISyntaxException e) {
 			System.err.println("[retryLoop] failed to write positionToken to file: " + e.getMessage());
+			throw new IOException("リトライ処理:position_tokenファイルの書き込み処理に失敗しました。", e);
 		}
 		
 	}
