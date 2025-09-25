@@ -91,7 +91,8 @@ public class StreamWithRetry {
 
 	/** 受信ループ：例外時に catch の中で N 回まで再接続 */
 	public void runStream(InputDto dto) throws IOException, URISyntaxException, InterruptedException {
-		String positionToken = null; // サーバが返すトークンで継続（任意）
+		
+		String positionToken = null;
 		
 		Pattern p = Pattern.compile("\"(position_token)\"\\s*:\\s*\"([^\"]+)\"");
 		
@@ -201,6 +202,7 @@ public class StreamWithRetry {
 			streamStop = true;
 		}
 		
+		// トークンをファイルに書き込む
 		try {
 			URL u = StreamWithRetry.class.getResource(positionTokenFilePath);
 			String toWrite = (this.positionToken == null) ? "" : this.positionToken;
